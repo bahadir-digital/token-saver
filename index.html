@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Token Saver — Dosyadan Markdown'a Çevirici</title>
+<meta name="description" content="PDF, Word, PowerPoint, Excel ve metin dosyalarını tarayıcında Markdown'a çevirir. Claude'a yüklemeden önce token tasarrufu yap. Hiçbir dosya sunucuya gitmez." />
+
+<!-- Roboto Mono -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
+<!-- Tarayıcıda çalışan kütüphaneler (dosyalar sunucuya gitmez) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/turndown/7.1.2/turndown.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<style>
+  :root {
+    /* Arka plan beyaz; yazı renkleri role göre farklı farklı */
+    --bg:        #FFFFFF;
+    --surface:   #FBFBFD;
+    --line:      #E7E7EE;
+    --ink:       #1A1A2E;   /* ana metin */
+    --slate:     #475569;   /* açıklama metni */
+    --indigo:    #4F46E5;   /* başlıklar */
+    --coral:     #E0613A;   /* marka / vurgu */
+    --teal:      #0E9F6E;   /* tasarruf / başarı */
+    --amber:     #B45309;   /* etiket / uyarı */
+    --violet:    #7C3AED;   /* kod / ikincil */
+    --rose:      #BE185D;   /* sayaç vurgusu */
+    --muted:     #94A3B8;   /* soluk */
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: var(--coral); }
+
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 40px 22px 80px;
+  }
+
+  /* ——— Başlık ——— */
+  header { margin-bottom: 28px; }
+
+  .eyebrow {
+    color: var(--amber);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin: 0 0 10px;
+  }
+
+  h1 {
+    color: var(--indigo);
+    font-size: 30px;
+    font-weight: 700;
+    line-height: 1.2;
+    margin: 0 0 12px;
+  }
+  h1 .accent { color: var(--coral); }
+
+  .lede {
+    color: var(--slate);
+    font-size: 15px;
+    margin: 0;
+    max-width: 60ch;
+  }
+
+  .why {
+    color: var(--teal);
+    font-weight: 600;
+    font-size: 14px;
+    margin: 14px 0 0;
+  }
+
+  /* ——— Bırakma alanı ——— */
+  .drop {
+    margin: 26px 0 0;
+    border: 2px dashed var(--line);
+    border-radius: 14px;
+    background: var(--surface);
+    padding: 38px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s ease, background .15s ease;
+  }
+  .drop:hover { border-color: var(--indigo); }
+  .drop.over  { border-color: var(--coral); background: #FFF7F4; }
+
+  .drop .icon { font-size: 30px; line-height: 1; }
+  .drop .big {
+    color: var(--ink);
+    font-weight: 600;
+    font-size: 16px;
+    margin: 12px 0 4px;
+  }
+  .drop .big .link { color: var(--indigo); text-decoration: underline; }
+  .drop .small { color: var(--muted); font-size: 12.5px; margin: 0; }
+
+  input[type=file] { display: none; }
+
+  /* ——— Durum satırı ——— */
+  .status {
+    margin: 16px 0 0;
+    min-height: 22px;
+    font-size: 13px;
+    color: var(--violet);
+  }
+  .status.err { color: var(--coral); }
+
+  /* ——— Sonuç kartları ——— */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin: 22px 0 0;
+  }
+  @media (max-width: 560px){ .stats { grid-template-columns: 1fr; } }
+
+  .stat {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 14px 16px;
+    background: var(--bg);
+  }
+  .stat .num { font-size: 22px; font-weight: 700; }
+  .stat .lbl { font-size: 11.5px; color: var(--muted); margin-top: 2px; letter-spacing: .5px; }
+  .stat.tokens .num { color: var(--rose); }
+  .stat.words  .num { color: var(--violet); }
+  .stat.save   .num { color: var(--teal); }
+
+  .save-note {
+    color: var(--slate);
+    font-size: 12px;
+    margin: 8px 2px 0;
+  }
+
+  /* ——— Çıktı ——— */
+  .out-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 26px 0 10px;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .out-head h2 {
+    color: var(--indigo);
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .out-head .fname { color: var(--amber); font-weight: 500; }
+
+  .btn {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--ink);
+    padding: 8px 14px;
+    border-radius: 9px;
+    cursor: pointer;
+    transition: all .12s ease;
+  }
+  .btn:hover { border-color: var(--ink); }
+  .btn.primary {
+    background: var(--coral);
+    border-color: var(--coral);
+    color: #fff;
+  }
+  .btn.primary:hover { background: #c9512e; border-color: #c9512e; }
+  .btn.copied { background: var(--teal); border-color: var(--teal); color: #fff; }
+  .btn-row { display: flex; gap: 8px; }
+
+  textarea.output {
+    width: 100%;
+    min-height: 320px;
+    resize: vertical;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+    white-space: pre-wrap;
+  }
+  textarea.output:focus { outline: 2px solid var(--indigo); outline-offset: 1px; }
+
+  .hidden { display: none; }
+
+  /* ——— Adımlar ——— */
+  .steps {
+    margin: 40px 0 0;
+    border-top: 1px solid var(--line);
+    padding-top: 26px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+  @media (max-width: 680px){ .steps { grid-template-columns: 1fr 1fr; } }
+
+  .step .n {
+    color: var(--coral);
+    font-weight: 700;
+    font-size: 13px;
+  }
+  .step .t { color: var(--ink); font-weight: 600; font-size: 13.5px; margin: 4px 0 2px; }
+  .step .d { color: var(--slate); font-size: 12.5px; margin: 0; }
+
+  /* ——— Gizlilik / alt bilgi ——— */
+  .note {
+    margin: 28px 0 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--teal);
+    border-radius: 10px;
+    padding: 13px 16px;
+    color: var(--slate);
+    font-size: 12.5px;
+  }
+  .note b { color: var(--teal); }
+
+  footer {
+    margin: 38px 0 0;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  footer a { color: var(--indigo); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Token Saver — <span class="accent">Dosyadan Markdown'a Çevirici</span></h1>
+    <p class="lede">Bir dosyayı Claude'a olduğu gibi yüklediğinde, içeriğin yanında o dosyanın gizli biçimlendirmesi için de token ödersin. Bu araç dosyayı sade metne (Markdown) indirger, böylece Claude aynı içeriği çok daha az token ile okur.</p>
+    <p class="why">Daha az token = daha düşük maliyet + limitlere daha geç takılma.</p>
+  </header>
+
+  <!-- Bırakma alanı -->
+  <div class="drop" id="drop" role="button" tabindex="0" aria-label="Dosya seç veya sürükle bırak">
+    <div class="icon">📄→📝</div>
+    <p class="big">Dosyanı buraya bırak ya da <span class="link">seçmek için tıkla</span></p>
+    <p class="small">PDF · Word (.docx) · PowerPoint (.pptx) · Excel (.xlsx) · metin (.txt/.md/.csv)</p>
+  </div>
+  <input type="file" id="file" accept=".pdf,.docx,.pptx,.xlsx,.txt,.md,.csv,.json,image/*" />
+
+  <p class="status" id="status"></p>
+
+  <!-- Sonuç -->
+  <div id="result" class="hidden">
+
+    <div class="stats">
+      <div class="stat tokens">
+        <div class="num" id="tokOut">—</div>
+        <div class="lbl">ÇIKTI TOKEN (TAHMİNİ)</div>
+      </div>
+      <div class="stat words">
+        <div class="num" id="wordOut">—</div>
+        <div class="lbl">KELİME</div>
+      </div>
+      <div class="stat save">
+        <div class="num" id="saveOut">—</div>
+        <div class="lbl">TİPİK TASARRUF</div>
+      </div>
+    </div>
+    <p class="save-note" id="saveNote"></p>
+
+    <div class="out-head">
+      <h2>Markdown çıktısı &nbsp;<span class="fname" id="fname"></span></h2>
+      <div class="btn-row">
+        <button class="btn" id="downloadBtn">İndir .md</button>
+        <button class="btn primary" id="copyBtn">Kopyala</button>
+      </div>
+    </div>
+
+    <textarea class="output" id="output" spellcheck="false" aria-label="Markdown çıktısı"></textarea>
+  </div>
+
+  <!-- Adımlar -->
+  <div class="steps">
+    <div class="step"><div class="n">01</div><div class="t">Dosyanı bırak</div><div class="d">Claude'a yükleyeceğin dosyayı buraya sürükle.</div></div>
+    <div class="step"><div class="n">02</div><div class="t">Çevirmesini bekle</div><div class="d">Çevirme tarayıcında, senin bilgisayarında olur.</div></div>
+    <div class="step"><div class="n">03</div><div class="t">Çıktıyı kopyala</div><div class="d">Oluşan Markdown'ı tek tıkla al.</div></div>
+    <div class="step"><div class="n">04</div><div class="t">Claude'a yapıştır</div><div class="d">Ham dosya yerine sade metni yapıştır.</div></div>
+  </div>
+
+  <div class="note">
+    <b>Gizlilik:</b> Çevirme tamamen tarayıcında çalışır. Dosyan hiçbir sunucuya gönderilmez, senin cihazında kalır. Sadece yazı tipleri ve kütüphaneler internetten yüklenir.
+  </div>
+
+  <footer>
+    <span>Token Saver · bahadir.digital</span>
+    <span><a href="https://bahadir.digital" target="_blank" rel="noopener">bahadir.digital</a> · <a href="https://github.com/bahadir-digital" target="_blank" rel="noopener">github.com/bahadir-digital</a></span>
+  </footer>
+
+</div>
+
+<script>
+/* ============================================================
+   Token Saver — dosyadan Markdown'a çevirici
+   Tüm işlem tarayıcıda yapılır.
+   ============================================================ */
+
+// pdf.js worker
+if (window.pdfjsLib) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+}
+
+const $ = (id) => document.getElementById(id);
+const dropEl   = $("drop");
+const fileEl   = $("file");
+const statusEl = $("status");
+const resultEl = $("result");
+const outputEl = $("output");
+const fnameEl  = $("fname");
+
+// Dosya türüne göre testlerden çıkan tipik tasarruf oranı (sunumdan)
+const TYPICAL_SAVING = {
+  pdf:  "~%70",
+  docx: "~%50",
+  pptx: "~%50",
+  xlsx: "~%40",
+  img:  "zaten hafif",
+  text: "—"
+};
+const SAVING_NOTE = {
+  pdf:  "PDF'ler genellikle en çok tasarrufu sağlar; düzen ve görsel katmanları atılır, içerik kalır.",
+  docx: "Word belgesinde stil ve biçim bilgisi token yer; sade metne indirgenince içerik korunur.",
+  pptx: "Slayt biçimlendirmesi yerine yalnızca metin kalır.",
+  xlsx: "Hücre biçimleri yerine tablo verisi Markdown tablosuna döner.",
+  img:  "Görseller zaten az token tutar; bu yüzden çevirmeye gerek kalmadan yüklenebilir.",
+  text: "Metin dosyası zaten sade; ufak temizlik dışında değişmez."
+};
+
+function setStatus(msg, isErr=false){
+  statusEl.textContent = msg;
+  statusEl.classList.toggle("err", isErr);
+}
+
+// Kaba token tahmini: yaklaşık 4 karakter ≈ 1 token
+function estimateTokens(text){ return Math.max(1, Math.round(text.length / 4)); }
+function countWords(text){
+  const m = text.trim().match(/\S+/g);
+  return m ? m.length : 0;
+}
+function fmt(n){ return n.toLocaleString("tr-TR"); }
+
+// ——— Sürükle-bırak olayları ———
+["dragenter","dragover"].forEach(ev =>
+  dropEl.addEventListener(ev, (e)=>{ e.preventDefault(); dropEl.classList.add("over"); })
+);
+["dragleave","drop"].forEach(ev =>
+  dropEl.addEventListener(ev, (e)=>{ e.preventDefault(); dropEl.classList.remove("over"); })
+);
+dropEl.addEventListener("drop", (e)=>{
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+dropEl.addEventListener("click", ()=> fileEl.click());
+dropEl.addEventListener("keydown", (e)=>{
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileEl.click(); }
+});
+fileEl.addEventListener("change", ()=>{
+  if (fileEl.files[0]) handleFile(fileEl.files[0]);
+});
+
+// ——— Ana akış ———
+async function handleFile(file){
+  const name = file.name || "dosya";
+  const ext  = (name.split(".").pop() || "").toLowerCase();
+  resultEl.classList.add("hidden");
+  setStatus(`"${name}" çevriliyor…`);
+
+  try {
+    let markdown = "";
+    let kind = "text";
+
+    if (ext === "pdf") {
+      kind = "pdf";  markdown = await pdfToMarkdown(file);
+    } else if (ext === "docx") {
+      kind = "docx"; markdown = await docxToMarkdown(file);
+    } else if (ext === "pptx") {
+      kind = "pptx"; markdown = await pptxToMarkdown(file);
+    } else if (ext === "xlsx" || ext === "xls") {
+      kind = "xlsx"; markdown = await xlsxToMarkdown(file);
+    } else if (["txt","md","markdown","csv","json","log"].includes(ext)) {
+      kind = "text"; markdown = await textToMarkdown(file, ext);
+    } else if ((file.type && file.type.startsWith("image/")) ||
+               ["png","jpg","jpeg","gif","webp","bmp","svg"].includes(ext)) {
+      kind = "img";  markdown = imageMessage(name);
+    } else {
+      // Bilinmeyen: metin gibi okumayı dene
+      kind = "text"; markdown = await textToMarkdown(file, ext);
+    }
+
+    markdown = tidy(markdown);
+    showResult(markdown, name, kind);
+    setStatus("Hazır. Çıktıyı kopyalayıp Claude'a yapıştırabilirsin.");
+  } catch (err){
+    console.error(err);
+    setStatus(`Çevrilemedi: ${err.message || err}. Dosya bozuk veya parolalı olabilir.`, true);
+  }
+}
+
+// ——— PDF ———
+async function pdfToMarkdown(file){
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const parts = [];
+  for (let p = 1; p <= pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    const tc = await page.getTextContent();
+    let lastY = null, line = [];
+    const lines = [];
+    tc.items.forEach(it => {
+      const y = it.transform[5];
+      if (lastY !== null && Math.abs(y - lastY) > 4){
+        lines.push(line.join("").replace(/\s+/g," ").trim());
+        line = [];
+      }
+      line.push(it.str + (it.hasEOL ? " " : ""));
+      lastY = y;
+    });
+    if (line.length) lines.push(line.join("").replace(/\s+/g," ").trim());
+    const text = lines.filter(Boolean).join("\n");
+    if (text.trim()) parts.push(text.trim());
+  }
+  if (!parts.join("").trim()){
+    return "> Bu PDF taranmış (görüntü) olabilir; içinde seçilebilir metin bulunamadı.";
+  }
+  return parts.join("\n\n");
+}
+
+// ——— Word (.docx) ———
+async function docxToMarkdown(file){
+  const buf = await file.arrayBuffer();
+  const res = await mammoth.convertToHtml({ arrayBuffer: buf });
+  const td = new TurndownService({ headingStyle: "atx", bulletListMarker: "-", codeBlockStyle: "fenced" });
+  return td.turndown(res.value || "");
+}
+
+// ——— PowerPoint (.pptx) ———
+async function pptxToMarkdown(file){
+  const buf = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(buf);
+  // slide1.xml, slide2.xml ... sıralı
+  const slideNames = Object.keys(zip.files)
+    .filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a,b)=>{
+      const na = +a.match(/slide(\d+)\.xml/)[1];
+      const nb = +b.match(/slide(\d+)\.xml/)[1];
+      return na - nb;
+    });
+  if (!slideNames.length) throw new Error("Slayt bulunamadı");
+
+  const out = [];
+  for (let i = 0; i < slideNames.length; i++){
+    const xml = await zip.files[slideNames[i]].async("string");
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const paras = doc.getElementsByTagName("a:p");
+    const lines = [];
+    for (const p of paras){
+      const runs = p.getElementsByTagName("a:t");
+      let t = "";
+      for (const r of runs) t += r.textContent;
+      t = t.replace(/\s+/g," ").trim();
+      if (t) lines.push(t);
+    }
+    out.push(`## Slayt ${i+1}\n\n` + (lines.join("\n") || "_(metin yok)_"));
+  }
+  return out.join("\n\n");
+}
+
+// ——— Excel (.xlsx) ———
+async function xlsxToMarkdown(file){
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const out = [];
+  wb.SheetNames.forEach(sheetName => {
+    const sheet = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false });
+    if (!rows.length) return;
+    out.push(`## ${sheetName}`);
+    const width = Math.max(...rows.map(r => r.length));
+    const norm = rows.map(r => {
+      const a = r.slice();
+      while (a.length < width) a.push("");
+      return a.map(c => String(c ?? "").replace(/\|/g,"\\|").replace(/\n/g," ").trim());
+    });
+    const head = norm[0];
+    out.push("| " + head.join(" | ") + " |");
+    out.push("| " + head.map(()=>"---").join(" | ") + " |");
+    for (let i = 1; i < norm.length; i++) out.push("| " + norm[i].join(" | ") + " |");
+    out.push("");
+  });
+  return out.join("\n") || "> Sayfada veri bulunamadı.";
+}
+
+// ——— Metin / CSV / JSON ———
+async function textToMarkdown(file, ext){
+  const text = await file.text();
+  if (ext === "csv"){
+    const rows = text.split(/\r?\n/).filter(l => l.trim()).map(l => l.split(","));
+    if (rows.length){
+      const head = rows[0];
+      const md = ["| " + head.join(" | ") + " |",
+                  "| " + head.map(()=>"---").join(" | ") + " |"];
+      for (let i=1;i<rows.length;i++) md.push("| " + rows[i].join(" | ") + " |");
+      return md.join("\n");
+    }
+  }
+  if (ext === "json"){
+    try { return "```json\n" + JSON.stringify(JSON.parse(text), null, 2) + "\n```"; }
+    catch { /* düz metne düş */ }
+  }
+  return text;
+}
+
+// ——— Görsel ———
+function imageMessage(name){
+  return `> **${name}** bir görsel dosyası.\n>\n> Görseller Claude'a yüklendiğinde zaten az token tutar, bu yüzden çevirmeye gerek yoktur. Dosyayı doğrudan yükleyebilirsin. Görseldeki metni metne dökmek istersen, görseli Claude'a yükleyip yazıya çevirmesini isteyebilirsin.`;
+}
+
+// ——— Temizlik ———
+function tidy(md){
+  return md
+    .replace(/\u00a0/g, " ")        // sabit boşluk
+    .replace(/[ \t]+\n/g, "\n")     // satır sonu boşlukları
+    .replace(/\n{3,}/g, "\n\n")     // fazla boş satır
+    .trim();
+}
+
+// ——— Sonucu göster ———
+function showResult(markdown, name, kind){
+  outputEl.value = markdown;
+  fnameEl.textContent = name;
+  $("tokOut").textContent  = fmt(estimateTokens(markdown));
+  $("wordOut").textContent = fmt(countWords(markdown));
+  $("saveOut").textContent = TYPICAL_SAVING[kind] || "—";
+  $("saveNote").textContent = (SAVING_NOTE[kind] || "") +
+    " Tasarruf oranı dosya türüne göre yapılan testlerden gelen tahmini bir aralıktır.";
+  resultEl.classList.remove("hidden");
+  resultEl.scrollIntoView({ behavior:"smooth", block:"nearest" });
+}
+
+// ——— Kopyala ———
+$("copyBtn").addEventListener("click", async ()=>{
+  try {
+    await navigator.clipboard.writeText(outputEl.value);
+  } catch {
+    outputEl.select(); document.execCommand("copy");
+  }
+  const b = $("copyBtn");
+  b.textContent = "Kopyalandı ✓";
+  b.classList.add("copied");
+  setTimeout(()=>{ b.textContent = "Kopyala"; b.classList.remove("copied"); }, 1600);
+});
+
+// ——— İndir ———
+$("downloadBtn").addEventListener("click", ()=>{
+  const blob = new Blob([outputEl.value], { type:"text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const base = (fnameEl.textContent || "cikti").replace(/\.[^.]+$/, "");
+  a.href = url; a.download = base + ".md";
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
